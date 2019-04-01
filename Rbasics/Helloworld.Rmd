@@ -1,0 +1,86 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+library (arules)
+library (arulesViz)
+library (RColorBrewer)
+
+# Load data
+#data ("Epub")
+#Epub
+#summary (Epub)
+
+data ("Groceries")
+print (dim (Groceries))
+print (dim (Groceries)[1])
+print (dim (Groceries)[2])
+```
+
+```{r}
+inspect (Epub[1:5])
+as (Epub[1:5], "list")
+```
+
+```{r}
+rules <- apriori(Epub, parameter = list(support = 0.001, confidence = 0.6))
+summary (rules)
+```
+
+```{r}
+inspect (head (sort (rules, by="lift"), n=3))
+```
+
+```{r}
+subrules <- rules [quality(rules)$confidence>0.7]
+plot (rules)
+```
+## Plot Item frequency
+```{r}
+itemFrequencyPlot (Groceries, support=0.075, cex.names=0.8, xlim=c(0, 0.3), type="relative", horiz=TRUE)#, col="dark red", las=1, xlab=paste ("Proportion of Market Baskets Containing Item", "\n(Item Relative Frequency or Support)"))
+```
+## Explore data
+```{r}
+print (head (itemInfo(Groceries)))
+print (levels(itemInfo(Groceries)[["level1"]]))
+print (levels(itemInfo(Groceries)[["level2"]]))
+```
+## Mine Association Rule
+```{r}
+first.rules <- apriori (Groceries, parameter=list (support=0.001, confidence=0.05))
+print (summary (first.rules))
+
+# Prune meaningless association rules using support and confidence threshold
+second.rules <- apriori(Groceries, parameter = list(support=0.025, confidence=0.05))
+print (summary(second.rules))
+```
+## Plot association rules
+```{r}
+plot(second.rules, control = list(jitter=2, col=rev(brewer.pal(9, "Greens")[4:9])), shading = "lift")
+```
+## Select meaningful rules
+```{r}
+# Select rules with vegetables in consequent item subsets 
+vegie.rules <- subset(second.rules, subset=rhs %pin% "vegetables")
+
+# %pin% is the function which uses keyword to subset
+inspect (vegie.rules)
+
+top.10.vegie.rules <- head(sort(vegie.rules, decreasing = TRUE, by="lift"), 10)
+plot (top.10.vegie.rules, method="graph", control = list(type="items"), shading = "lift")
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+

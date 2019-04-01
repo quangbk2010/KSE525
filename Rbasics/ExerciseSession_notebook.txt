@@ -1,0 +1,116 @@
+---
+title: "R Exercise for KSE525"
+output: html_notebook
+---
+
+## Association Rule Tutorial in R
+
+- In this tutorial, we will learn how to:
+    - Load data and essential libraries
+    - Explore and understand data
+    - Preprocess and transform data before analysis
+    - Analyze data using association rules
+    - Visualize data mining results
+- After tutorial, we will perform project to be fully aware of association rules
+
+## Package and Data
+
+```{r}
+# Load package
+library(arules) # association rules
+library(arulesViz) # data visualization of association rules
+library(RColorBrewer) # color palettes for plots
+
+# Load data
+data(Groceries) # grocery transactions object from arules package
+# Check loaded data
+print(dim(Groceries)) # number of baskets and items in them
+print(dim(Groceries)[1]) # 9835 market baskets for shopping trips
+print(dim(Groceries)[2]) # 169 initial store items
+```
+
+## Plot Item Frequency 
+
+```{r}
+# Plot item frequency
+itemFrequencyPlot(Groceries, support = 0.025, cex.names = 0.8, xlim = c(0,0.3), type = "relative", horiz = TRUE, col = "dark red", las = 1, xlab = paste("Proportion of Market Baskets Containing Item", "\n(Item Relative Frequency or Support)"))
+```
+
+## Explore Data
+
+```{r}
+print(head(itemInfo(Groceries))) 
+print(levels(itemInfo(Groceries)[["level1"]]))  # 10 distinct levels
+print(levels(itemInfo(Groceries)[["level2"]])) # 55 distinct levels
+```
+
+## Data Preprocessing
+
+```{r}
+# Aggregate items using the 55 level2 levels for food categories to create a more meaningful set of items
+groceries <- aggregate(Groceries, itemInfo(Groceries)[["level2"]])
+print(dim(groceries)[1]) # 9835 market baskets for shopping trips
+print(dim(groceries)[2]) # 55 final store items(categories)
+```
+
+## Plot Item Frequency
+
+```{r}
+# Plot item frequency
+itemFrequencyPlot(groceries, support = 0.025, cex.names = 1.0, xlim = c(0,0.5), type = "relative", horiz = TRUE, col = "blue", las = 1, xlab = paste("Proportion of Market Baskets Containing Item", "\n(Item Relative Frequency or Support)"))
+```
+
+## Mine Association Rules 
+
+```{r}
+# Obtain large set of association rules for items by category and all shoppers. This is done by setting very low criteria for support and confidence
+first.rules <- apriori(groceries, parameter = list(support = 0.001, confidence = 0.05))
+print(summary(first.rules)) # yields 69,921 rules
+
+# Prune meaningless association rules using thresholds for support and confidence
+second.rules <- apriori(groceries, parameter = list(support = 0.025, confidence = 0.05))
+print(summary(second.rules)) # yields 344 rules
+```
+
+## Plot Association Rules
+
+```{r}
+# Data visualization of association rules in scatter plot
+# arulesViz, RColorBrewer packages are used here
+plot(second.rules, control=list(jitter = 2, col = rev(brewer.pal(9, "Greens")[4:9])), shading = "lift")
+```
+
+## Select Meaningful Rules
+
+```{r}
+# Select rules with vegetables in consequent (right-hand-side) item subsets
+vegie.rules <- subset(second.rules, subset = rhs %pin% "vegetables")
+
+# %pin% is the function which uses keyword to subset 
+inspect(vegie.rules) # 41 rules
+
+# Sort by lift and identify the top 10 rules
+top.10.vegie.rules <- head(sort(vegie.rules, decreasing = TRUE, by = "lift"), 10)
+inspect(top.10.vegie.rules)
+plot(top.10.vegie.rules, method="graph", control=list(type="items"), shading = "lift")
+```
+
+## Project: Hard Drinks
+
+- To see what people buy before hard drinks are purchased, we will do:
+    - Load data and essential libraries(arules, arulesViz, RColorBrewer)
+    - Make a new dataset 'groceries' aggregating item categories of Groceries itemsets into 55 categories; Level 1 has 10 categories, level 2 has 55 categories
+    - Plot item frequency with support 0.001 using itemFrequencyPlot() function in 'blue' color 
+    - Create association rules using Apriori() function with support 0.001 and confidence 0.05
+    - Plot the association rules in 'Reds' color using plot() function
+    - Extract transactions including hard drinks on the right side using subset() function; 'hard drinks' is one of 55 item categories in Groceries itemset level 2
+    - Sort by the lift measure and print the top 5 association rules using head() function
+    - Identify which item is included in all rules in the left side after listing all rules using inspect() function and explain whether it is important or not
+    - Plot a graph of the top 5 rules using plot()
+    - Analyze whether the derived 5 rules are important based on appropriate measures(lift, confidence, support) or other reasons
+    
+- Append a code chunk and text to include:
+    - 3 plots
+    - Common item category in the left side of top 5 association rules and explanation whether that category is important related to 'hard drinks' category
+    - Association rule, support, confidence, lift measure, count value from the top 5 association rules
+    - Reasons whether the top 5 association rules are important or not based on the measures or other reasons

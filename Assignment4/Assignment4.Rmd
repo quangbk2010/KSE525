@@ -1,0 +1,53 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+data (wine, package="rattle.data")
+df <- scale(wine[-1])
+wssplot <- function(data, nc=15, seed=1234){
+  wss <- (nrow(data)-1)*sum(apply(data,2,var))
+  for (i in 2:nc) {
+    set.seed(seed)
+    wss[i] <- sum(kmeans(data, centers=i)$withinss)
+  }
+  plot(1:nc, wss, type="b", xlab="Number of Clusters",
+  ylab="Within groups sum of squares")
+}
+
+```
+
+```{r}
+wssplot(df)
+```
+- wssplot function shows the relationship between the percentage of variance explained by the clusters against the number of clusters
+- According to the result of executing this function, k = 3
+
+```{r}
+set.seed(1234)
+(cl <- kmeans(df, 3, nstart = 25))
+```
+- #records belongs to cluster1: 62
+- #records belongs to cluster2: 65
+- #records belongs to cluster3: 51
+```{r}
+aggregate(wine[-1], by = list (cl$cluster), FUN = mean)
+```
+
+```{r}
+library(cluster)
+table (wine$Type, cl$cluster)
+```
+- There are 3 records of type 3 that are assigned to incorrect clusters
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+

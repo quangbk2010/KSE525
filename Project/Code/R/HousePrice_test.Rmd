@@ -1,0 +1,968 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(knitr)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(corrplot)
+library(caret)
+library(gridExtra)
+library(scales)
+library(Rmisc)
+library(ggrepel)
+library(randomForest)
+library(psych)
+library(xgboost)
+```
+
+```{r}
+train <- read.csv("../../Data/train.csv", stringsAsFactors = F)
+test <- read.csv("../../Data/test.csv", stringsAsFactors = F)
+```
+
+
+```{r}
+#Getting rid of the IDs but keeping the test IDs in a vector. These are needed to compose the submission file
+test_labels <- test$Id
+test$Id <- NULL
+train$Id <- NULL
+```
+
+```{r}
+test$SalePrice <- NA
+all <- rbind(train, test)
+dim(all)
+```
+
+
+```{r}
+numericVars <- which(sapply(all, is.numeric))
+numericVarNames <- names (numericVars)
+cat("There are", length(numericVars), "numeric variables")
+```
+
+```{r}
+all_numVar <- all[,numericVars]
+cor_numVar <- cor(all_numVar, use = "pairwise.complete.obs") #correlation of all numeric variables
+
+#sort on decreasing correlations with SalePrice
+cor_sorted <- as.matrix(sort(cor_numVar[,"SalePrice"], decreasing = TRUE))
+
+#select only high correlations
+corHigh <- names(which(apply(cor_sorted, 1, function(x) abs(x) > 0.5)))
+cor_numVar <- cor_numVar[corHigh, corHigh]
+```
+
+
+```{r}
+naCol <- which(colSums(is.na(all)) > 0)
+sort(colSums(sapply(all[naCol], is.na)), decreasing = TRUE)
+```
+
+
+Pool Quality and the PoolArea variable
+```{r}
+all$PoolQC[is.na(all$PoolQC)] <- "None"
+
+# Label encode as the values are ordinal
+Qualities <- c("None"=0, "Po"=1, "Fa"=2, "TA"=3, "Gd"=4, "Ex"=5)
+
+all$PoolQC <- as.integer(revalue(all$PoolQC, Qualities))
+
+```
+
+There are no clear relation between PoolArea and PoolQC -> impite PoolQC values vased on the Overall Quality
+```{r}
+all[all$PoolArea>0 & all$PoolQC==0, c("PoolArea", "PoolQC", "OverallQual")]
+```
+
+
+```{r}
+all$PoolQC[2421] <- 2
+all$PoolQC[2504] <- 3
+all$PoolQC[2600] <- 2
+```
+
+```{r}
+all$MiscFeature[is.na(all$MiscFeature)] <- 'None'
+all$MiscFeature <- as.factor(all$MiscFeature)
+```
+
+
+```{r}
+all$Alley[is.na(all$Alley)] <- 'None'
+all$Alley <- as.factor(all$Alley)
+```
+
+```{r}
+all$Fence[is.na(all$Fence)] <- 'None'
+```
+
+```{r}
+#My conclusion is that the values do not seem ordinal (no fence is best). Therefore, I will convert Fence into a factor.
+all$Fence <- as.factor(all$Fence)
+```
+
+```{r}
+all$FireplaceQu[is.na(all$FireplaceQu)] <- 'None'
+all$FireplaceQu<-as.integer(revalue(all$FireplaceQu, Qualities))
+```
+
+
+```{r}
+for (i in 1:nrow(all)){
+        if(is.na(all$LotFrontage[i])){
+               all$LotFrontage[i] <- as.integer(median(all$LotFrontage[all$Neighborhood==all$Neighborhood[i]], na.rm=TRUE)) 
+        }
+}
+```
+
+```{r}
+all$LotShape<-as.integer(revalue(all$LotShape, c('IR3'=0, 'IR2'=1, 'IR1'=2, 'Reg'=3)))
+```
+
+```{r}
+all$LotConfig <- as.factor(all$LotConfig)
+```
+
+Garage variables
+Altogether, there are 7 variables related to garages
+Two of those have one NA (GarageCars and GarageArea), one has 157 NAs (GarageType), 4 variables have 159 NAs.
+
+First of all, I am going to replace all 159 missing GarageYrBlt: Year garage was built values with the values in YearBuilt (this is similar to YearRemodAdd, which also defaults to YearBuilt if no remodeling or additions).
+```{r}
+all$GarageYrBlt[is.na(all$GarageYrBlt)] <- all$YearBuilt[is.na(all$GarageYrBlt)]
+```
+The 157 NAs within GarageType all turn out to be NA in GarageCondition, GarageQuality, and GarageFinish as well. The differences are found in houses 2127 and 2577. As you can see, house 2127 actually does seem to have a Garage and house 2577 does not. Therefore, there should be 158 houses without a Garage. To fix house 2127, I will imputate the most common values (modes) for GarageCond, GarageQual, and GarageFinish.
+```{r}
+#Imputing modes.
+all$GarageCond[2127] <- names(sort(-table(all$GarageCond)))[1]
+all$GarageQual[2127] <- names(sort(-table(all$GarageQual)))[1]
+all$GarageFinish[2127] <- names(sort(-table(all$GarageFinish)))[1]
+```
+
+```{r}
+#fixing 3 values for house 2577
+all$GarageCars[2577] <- 0
+all$GarageArea[2577] <- 0
+all$GarageType[2577] <- NA
+```
+
+```{r}
+all$GarageType[is.na(all$GarageType)] <- 'No Garage'
+all$GarageType <- as.factor(all$GarageType)
+```
+
+```{r}
+all$GarageFinish[is.na(all$GarageFinish)] <- 'None'
+Finish <- c('None'=0, 'Unf'=1, 'RFn'=2, 'Fin'=3)
+
+all$GarageFinish<-as.integer(revalue(all$GarageFinish, Finish))
+```
+
+```{r}
+all$GarageQual[is.na(all$GarageQual)] <- 'None'
+all$GarageQual<-as.integer(revalue(all$GarageQual, Qualities))
+```
+
+```{r}
+all$GarageCond[is.na(all$GarageCond)] <- 'None'
+all$GarageCond<-as.integer(revalue(all$GarageCond, Qualities))
+```
+
+```{r}
+#Find the additional NAs; BsmtFinType1 is the one with 79 NAs
+all[!is.na(all$BsmtFinType1) & (is.na(all$BsmtCond)|is.na(all$BsmtQual)|is.na(all$BsmtExposure)|is.na(all$BsmtFinType2)), c('BsmtQual', 'BsmtCond', 'BsmtExposure', 'BsmtFinType1', 'BsmtFinType2')]
+```
+
+So altogether, it seems as if there are 79 houses without a basement, because the basement variables of the other houses with missing values are all 80% complete (missing 1 out of 5 values). I am going to impute the modes to fix those 9 houses.
+```{r}
+#Imputing modes.
+all$BsmtFinType2[333] <- names(sort(-table(all$BsmtFinType2)))[1]
+all$BsmtExposure[c(949, 1488, 2349)] <- names(sort(-table(all$BsmtExposure)))[1]
+all$BsmtCond[c(2041, 2186, 2525)] <- names(sort(-table(all$BsmtCond)))[1]
+all$BsmtQual[c(2218, 2219)] <- names(sort(-table(all$BsmtQual)))[1]
+```
+
+```{r}
+all$BsmtQual[is.na(all$BsmtQual)] <- 'None'
+all$BsmtQual<-as.integer(revalue(all$BsmtQual, Qualities))
+```
+
+```{r}
+all$BsmtCond[is.na(all$BsmtCond)] <- 'None'
+all$BsmtCond<-as.integer(revalue(all$BsmtCond, Qualities))
+```
+
+```{r}
+all$BsmtExposure[is.na(all$BsmtExposure)] <- 'None'
+Exposure <- c('None'=0, 'No'=1, 'Mn'=2, 'Av'=3, 'Gd'=4)
+
+all$BsmtExposure<-as.integer(revalue(all$BsmtExposure, Exposure))
+table(all$BsmtExposure)
+```
+
+```{r}
+all$BsmtFinType1[is.na(all$BsmtFinType1)] <- 'None'
+FinType <- c('None'=0, 'Unf'=1, 'LwQ'=2, 'Rec'=3, 'BLQ'=4, 'ALQ'=5, 'GLQ'=6)
+
+all$BsmtFinType1<-as.integer(revalue(all$BsmtFinType1, FinType))
+```
+
+```{r}
+all$BsmtFinType2[is.na(all$BsmtFinType2)] <- 'None'
+FinType <- c('None'=0, 'Unf'=1, 'LwQ'=2, 'Rec'=3, 'BLQ'=4, 'ALQ'=5, 'GLQ'=6)
+
+all$BsmtFinType2<-as.integer(revalue(all$BsmtFinType2, FinType))
+```
+
+```{r}
+#display remaining NAs. Using BsmtQual as a reference for the 79 houses without basement agreed upon earlier
+all[(is.na(all$BsmtFullBath)|is.na(all$BsmtHalfBath)|is.na(all$BsmtFinSF1)|is.na(all$BsmtFinSF2)|is.na(all$BsmtUnfSF)|is.na(all$TotalBsmtSF)), c('BsmtQual', 'BsmtFullBath', 'BsmtHalfBath', 'BsmtFinSF1', 'BsmtFinSF2', 'BsmtUnfSF', 'TotalBsmtSF')]
+```
+
+```{r}
+all$BsmtFullBath[is.na(all$BsmtFullBath)] <-0
+```
+
+```{r}
+all$BsmtHalfBath[is.na(all$BsmtHalfBath)] <-0
+```
+
+```{r}
+all$BsmtFinSF1[is.na(all$BsmtFinSF1)] <-0
+all$BsmtFinSF2[is.na(all$BsmtFinSF2)] <-0
+all$BsmtUnfSF[is.na(all$BsmtUnfSF)] <-0
+all$TotalBsmtSF[is.na(all$TotalBsmtSF)] <-0
+```
+
+Masonry veneer type has 24 NAs. Masonry veneer area has 23 NAs. If a house has a veneer area, it should also have a masonry veneer type. Let’s fix this one first.
+```{r}
+#check if the 23 houses with veneer area NA are also NA in the veneer type
+length(which(is.na(all$MasVnrType) & is.na(all$MasVnrArea)))
+```
+
+
+```{r}
+#find the one that should have a MasVnrType
+all[is.na(all$MasVnrType) & !is.na(all$MasVnrArea), c('MasVnrType', 'MasVnrArea')]
+```
+
+```{r}
+#fix this veneer type by imputing the mode
+all$MasVnrType[2611] <- names(sort(-table(all$MasVnrType)))[2] #taking the 2nd value as the 1st is 'none'
+all[2611, c('MasVnrType', 'MasVnrArea')]
+```
+
+```{r}
+all$MasVnrType[is.na(all$MasVnrType)] <- 'None'
+
+all[!is.na(all$SalePrice),] %>% group_by(MasVnrType) %>% summarise(median = median(SalePrice), counts=n()) %>% arrange(median)
+```
+
+There seems to be a significant difference between “common brick/none” and the other types. I assume that simple stones and for instance wooden houses are just cheaper. I will make the ordinality accordingly.
+```{r}
+Masonry <- c('None'=0, 'BrkCmn'=0, 'BrkFace'=1, 'Stone'=2)
+all$MasVnrType<-as.integer(revalue(all$MasVnrType, Masonry))
+```
+
+```{r}
+all$MasVnrArea[is.na(all$MasVnrArea)] <-0
+```
+
+```{r}
+#imputing the mode
+all$MSZoning[is.na(all$MSZoning)] <- names(sort(-table(all$MSZoning)))[1]
+all$MSZoning <- as.factor(all$MSZoning)
+```
+
+```{r}
+all$KitchenQual[is.na(all$KitchenQual)] <- 'TA' #replace with most common value
+all$KitchenQual<-as.integer(revalue(all$KitchenQual, Qualities))
+```
+
+
+```{r}
+all$Utilities <- NULL
+```
+
+```{r}
+#impute mode for the 1 NA
+all$Functional[is.na(all$Functional)] <- names(sort(-table(all$Functional)))[1]
+
+all$Functional <- as.integer(revalue(all$Functional, c('Sal'=0, 'Sev'=1, 'Maj2'=2, 'Maj1'=3, 'Mod'=4, 'Min2'=5, 'Min1'=6, 'Typ'=7)))
+```
+
+```{r}
+#imputing mode
+all$Exterior1st[is.na(all$Exterior1st)] <- names(sort(-table(all$Exterior1st)))[1]
+
+all$Exterior1st <- as.factor(all$Exterior1st)
+```
+
+```{r}
+#imputing mode
+all$Exterior2nd[is.na(all$Exterior2nd)] <- names(sort(-table(all$Exterior2nd)))[1]
+
+all$Exterior2nd <- as.factor(all$Exterior2nd)
+```
+
+```{r}
+all$ExterQual<-as.integer(revalue(all$ExterQual, Qualities))
+## The following `from` values were not present in `x`: None, Po
+```
+
+```{r}
+all$ExterCond<-as.integer(revalue(all$ExterCond, Qualities))
+## The following `from` values were not present in `x`: None
+```
+
+```{r}
+#imputing mode
+all$Electrical[is.na(all$Electrical)] <- names(sort(-table(all$Electrical)))[1]
+
+all$Electrical <- as.factor(all$Electrical)
+```
+
+```{r}
+#imputing mode
+all$SaleType[is.na(all$SaleType)] <- names(sort(-table(all$SaleType)))[1]
+
+all$SaleType <- as.factor(all$SaleType)
+```
+```{r}
+all$SaleCondition <- as.factor(all$SaleCondition)
+```
+
+5.3 Label encoding/factorizing the remaining character variables
+```{r}
+charCol <- names(all[, sapply(all, is.character)])
+```
+
+```{r}
+#No ordinality, so converting into factors
+all$Foundation <- as.factor(all$Foundation)
+```
+
+```{r}
+#No ordinality, so converting into factors
+all$Heating <- as.factor(all$Heating)
+```
+
+```{r}
+#making the variable ordinal using the Qualities vector
+all$HeatingQC<-as.integer(revalue(all$HeatingQC, Qualities))
+```
+
+```{r}
+all$CentralAir<-as.integer(revalue(all$CentralAir, c('N'=0, 'Y'=1)))
+```
+
+```{r}
+#No ordinality, so converting into factors
+all$RoofStyle <- as.factor(all$RoofStyle)
+all$RoofMatl <- as.factor(all$RoofMatl)
+```
+
+```{r}
+#No ordinality, so converting into factors
+all$RoofMatl <- as.factor(all$RoofMatl)
+```
+
+```{r}
+#No ordinality, so converting into factors
+all$LandContour <- as.factor(all$LandContour)
+```
+
+```{r}
+#Ordinal, so label encoding
+all$LandSlope<-as.integer(revalue(all$LandSlope, c('Sev'=0, 'Mod'=1, 'Gtl'=2)))
+```
+
+```{r}
+#No ordinality, so converting into factors
+all$BldgType <- as.factor(all$BldgType)
+```
+
+```{r}
+#No ordinality, so converting into factors
+all$HouseStyle <- as.factor(all$HouseStyle)
+```
+
+```{r}
+#No ordinality, so converting into factors
+all$Neighborhood <- as.factor(all$Neighborhood)
+```
+
+```{r}
+#No ordinality, so converting into factors
+all$Condition1 <- as.factor(all$Condition1)
+```
+
+```{r}
+#No ordinality, so converting into factors
+all$Condition2 <- as.factor(all$Condition2)
+```
+
+```{r}
+#Ordinal, so label encoding
+all$Street<-as.integer(revalue(all$Street, c('Grvl'=0, 'Pave'=1)))
+```
+
+```{r}
+#Ordinal, so label encoding
+all$PavedDrive<-as.integer(revalue(all$PavedDrive, c('N'=0, 'P'=1, 'Y'=2)))
+```
+
+```{r}
+all$MoSold <- as.factor(all$MoSold)
+```
+
+
+```{r}
+all$MSSubClass <- as.factor(all$MSSubClass)
+
+#revalue for better readability
+all$MSSubClass<-revalue(all$MSSubClass, c('20'='1 story 1946+', '30'='1 story 1945-', '40'='1 story unf attic', '45'='1,5 story unf', '50'='1,5 story fin', '60'='2 story 1946+', '70'='2 story 1945-', '75'='2,5 story all ages', '80'='split/multi level', '85'='split foyer', '90'='duplex all style/age', '120'='1 story PUD 1946+', '150'='1,5 story PUD all', '160'='2 story PUD 1946+', '180'='PUD multilevel', '190'='2 family conversion'))
+```
+
+
+```{r}
+numericVars <- which(sapply(all, is.numeric)) #index vector numeric variables
+factorVars <- which(sapply(all, is.factor)) #index vector factor variables
+cat('There are', length(numericVars), 'numeric variables, and', length(factorVars), 'categoric variables')
+```
+
+```{r}
+all_numVar <- all[, numericVars]
+cor_numVar <- cor(all_numVar, use="pairwise.complete.obs") #correlations of all numeric variables
+
+#sort on decreasing correlations with SalePrice
+cor_sorted <- as.matrix(sort(cor_numVar[,'SalePrice'], decreasing = TRUE))
+ #select only high corelations
+CorHigh <- names(which(apply(cor_sorted, 1, function(x) abs(x)>0.5)))
+cor_numVar <- cor_numVar[CorHigh, CorHigh]
+```
+
+```{r}
+set.seed(2018)
+quick_RF <- randomForest(x=all[1:1460,-79], y=all$SalePrice[1:1460], ntree=100,importance=TRUE)
+imp_RF <- importance(quick_RF)
+imp_DF <- data.frame(Variables = row.names(imp_RF), MSE = imp_RF[,1])
+imp_DF <- imp_DF[order(imp_DF$MSE, decreasing = TRUE),]
+```
+
+```{r}
+head(all[all$LowQualFinSF>0, c('GrLivArea', 'X1stFlrSF', 'X2ndFlrSF', 'LowQualFinSF')])
+```
+
+```{r}
+#correct error
+all$GarageYrBlt[2593] <- 2007 #this must have been a typo. GarageYrBlt=2207, YearBuilt=2006, YearRemodAdd=2007.
+```
+
+
+```{r}
+all$TotBathrooms <- all$FullBath + (all$HalfBath*0.5) + all$BsmtFullBath + (all$BsmtHalfBath*0.5)
+```
+
+```{r}
+all$Remod <- ifelse(all$YearBuilt==all$YearRemodAdd, 0, 1) #0=No Remodeling, 1=Remodeling
+all$Age <- as.numeric(all$YrSold)-all$YearRemodAdd
+```
+
+```{r}
+all$durSold <- as.numeric(all$YrSold)-all$YearBuilt
+all$has2ndFloor <- ifelse(all$X2ndFlrSF > 0, 1, 0) #0=No 2nd floor, 1=have'
+all$hasPool <- ifelse(all$PoolArea > 0, 1, 0)
+```
+
+```{r}
+# ggplot(data=all[!is.na(all$SalePrice),], aes(x=Age, y=SalePrice))+
+#     geom_point(col='blue') + geom_smooth(method = "lm", se=FALSE, color="black", aes(group=1)) +
+#     scale_y_continuous(breaks= seq(0, 800000, by=100000), labels = comma)
+# ggplot(data=all[!is.na(all$SalePrice),], aes(x=durSold, y=SalePrice))+
+#     geom_point(col='blue') + geom_smooth(method = "lm", se=FALSE, color="black", aes(group=1)) +
+#     scale_y_continuous(breaks= seq(0, 800000, by=100000), labels = comma)
+# 
+# ggplot(all[!is.na(all$SalePrice),], aes(x=as.factor(has2ndFloor), y=SalePrice)) +
+#     geom_bar(stat='summary', fun.y = "median", fill='blue') +
+#     geom_label(stat = "count", aes(label = ..count.., y = ..count..), size=6) +
+#     scale_y_continuous(breaks= seq(0, 800000, by=50000), labels = comma) +
+#     theme_grey(base_size = 18) +
+#     geom_hline(yintercept=163000, linetype="dashed") #dashed line is median SalePrice
+# 
+# ggplot(all[!is.na(all$SalePrice),], aes(x=as.factor(hasPool), y=SalePrice)) +
+#     geom_bar(stat='summary', fun.y = "median", fill='blue') +
+#     geom_label(stat = "count", aes(label = ..count.., y = ..count..), size=6) +
+#     scale_y_continuous(breaks= seq(0, 800000, by=50000), labels = comma) +
+#     theme_grey(base_size = 18) +
+#     geom_hline(yintercept=163000, linetype="dashed") #dashed line is median SalePrice
+```
+
+```{r}
+all$season <- revalue(all$MoSold, c("12"="Winter", "1"="Winter", "2"="Winter", "3"="Spring", "4"="Spring", "5"="Spring", "6"="Summer", "7"="Summer", "8"="Summer", "9"="Autumn", "10"="Autumn", "11"="Autumn"))
+all$season <- as.factor(all$season)
+str (all$season)
+```
+
+```{r}
+# ggplot(all[!is.na(all$SalePrice),], aes(x=as.factor(season), y=SalePrice)) +
+#     geom_bar(stat='summary', fun.y = "median", fill='blue') +
+#     geom_label(stat = "count", aes(label = ..count.., y = ..count..), size=6) +
+#     scale_y_continuous(breaks= seq(0, 800000, by=50000), labels = comma) +
+#     theme_grey(base_size = 18) +
+#     geom_hline(yintercept=163000, linetype="dashed") #dashed line is median SalePrice
+```
+
+Finally, I am creating the IsNew variable below. Altogether, there are 116 new houses in the dataset.
+```{r}
+all$IsNew <- ifelse(all$YrSold==all$YearBuilt, 1, 0)
+```
+
+
+```{r}
+all$YrSold <- as.factor(all$YrSold) #the numeric version is now not needed anymore
+```
+
+
+```{r}
+all$NeighRich[all$Neighborhood %in% c('StoneBr', 'NridgHt', 'NoRidge')] <- 2
+all$NeighRich[!all$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale', 'StoneBr', 'NridgHt', 'NoRidge')] <- 1
+all$NeighRich[all$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale')] <- 0
+```
+
+7.4 Total Square Feet
+```{r}
+all$TotalSqFeet <- all$GrLivArea + all$TotalBsmtSF
+```
+
+```{r}
+all$TotalPorchSF <- all$OpenPorchSF + all$EnclosedPorch + all$X3SsnPorch + all$ScreenPorch
+```
+
+```{r}
+dropVars <- c('YearRemodAdd', 'GarageYrBlt', 'GarageArea', 'GarageCond', 'TotalBsmtSF', 'TotalRmsAbvGrd', 'BsmtFinSF1')
+
+all <- all[,!(names(all) %in% dropVars)]
+```
+
+
+```{r}
+all <- all[-c(524, 1299),]
+all <- all[-c(333, 441, 497),]
+all <- all[-c(935, 250, 314, 336, 707),]
+all <- all[-c(633, 1325, 463, 971, 689),]
+
+all <- all[-c(323, 496, 198, 1231, 347, 739, 1329)]
+```
+
+
+```{r}
+numericVarNames <- numericVarNames[!(numericVarNames %in% c('MSSubClass', 'MoSold', 'YrSold', 'SalePrice', 'OverallQual', 'OverallCond'))] #numericVarNames was created before having done anything
+numericVarNames <- append(numericVarNames, c('Age', 'TotalPorchSF', 'TotBathrooms', 'TotalSqFeet'))
+
+DFnumeric <- all[, names(all) %in% numericVarNames]
+
+DFfactors <- all[, !(names(all) %in% numericVarNames)]
+DFfactors <- DFfactors[, names(DFfactors) != 'SalePrice']
+
+cat('There are', length(DFnumeric), 'numeric variables, and', length(DFfactors), 'factor variables')
+```
+
+```{r}
+for(i in 1:ncol(DFnumeric)){
+        if (abs(skew(DFnumeric[,i]))>0.8){
+                DFnumeric[,i] <- log(DFnumeric[,i] +1)
+        }
+}
+```
+
+Normalizing the data
+```{r}
+PreNum <- preProcess(DFnumeric, method=c("center", "scale"))
+```
+
+```{r}
+DFnorm <- predict(PreNum, DFnumeric)
+dim(DFnorm)
+```
+
+
+```{r}
+DFdummies <- as.data.frame(model.matrix(~.-1, DFfactors))
+dim(DFdummies)
+```
+
+
+```{r}
+#check if some values are absent in the test set
+ZerocolTest <- which(colSums(DFdummies[(nrow(all[!is.na(all$SalePrice),])+1):nrow(all),])==0)
+colnames(DFdummies[ZerocolTest])
+```
+
+```{r}
+DFdummies <- DFdummies[,-ZerocolTest] #removing predictors
+```
+
+```{r}
+#check if some values are absent in the train set
+ZerocolTrain <- which(colSums(DFdummies[1:nrow(all[!is.na(all$SalePrice),]),])==0)
+colnames(DFdummies[ZerocolTrain])
+```
+
+```{r}
+DFdummies <- DFdummies[,-ZerocolTrain] #removing predictor
+```
+Also taking out variables with less than 10 ‘ones’ in the train set.
+
+```{r}
+fewOnes <- which(colSums(DFdummies[1:nrow(all[!is.na(all$SalePrice),]),])<10)
+colnames(DFdummies[fewOnes])
+```
+
+```{r}
+DFdummies <- DFdummies[,-fewOnes] #removing predictors
+dim(DFdummies)
+```
+
+
+```{r}
+all$SalePrice <- log(all$SalePrice) #default is the natural logarithm, "+1" is not necessary as there are no 0's
+skew(all$SalePrice)
+```
+
+```{r}
+combined <- cbind(DFnorm, DFdummies) #combining all (now numeric) predictors into one dataframe 
+```
+
+```{r}
+train1 <- combined[!is.na(all$SalePrice),]
+test1 <- combined[is.na(all$SalePrice),]
+dim(train)
+dim(train1)
+dim(test)
+dim(test1)
+```
+
+```{r}
+set.seed(27042018)
+my_control <-trainControl(method="cv", number=5)
+lassoGrid <- expand.grid(alpha = 1, lambda = seq(0.001,0.1,by = 0.0005))
+#lassoGrid <- expand.grid(alpha = seq(0, 1, 0.2), lambda = seq(0.001,0.1,by = 0.0005))
+
+lasso_mod <- train(x=train1, y=all$SalePrice[!is.na(all$SalePrice)], method='glmnet', trControl= my_control, tuneGrid=lassoGrid) 
+lasso_mod$bestTune
+```
+
+```{r}
+min(lasso_mod$results$RMSE)
+#0.1121579
+```
+
+```{r}
+lassoVarImp <- varImp(lasso_mod,scale=F)
+lassoImportance <- lassoVarImp$importance
+```
+
+So lasso did what it is supposed to do: it seems to have dealt with multicolinearity well by not using about 45% of the available variables in the model.
+```{r}
+LassoPred <- predict(lasso_mod, test1)
+predictions_lasso <- exp(LassoPred) #need to reverse the log to the real values
+head(predictions_lasso)
+```
+
+```{r}
+sub_lasso <- data.frame(Id = test_labels, SalePrice = predictions_lasso) 
+write.csv(sub_lasso, file = 'lasso.csv', row.names = F)
+```
+
+
+Ridge regression
+```{r}
+set.seed(27042018)
+my_control <-trainControl(method="cv", number=5)
+ridgeGrid <- expand.grid(alpha = 0, lambda = seq(0.001,0.1,by = 0.0005))
+
+ridge_mod <- train(x=train1, y=all$SalePrice[!is.na(all$SalePrice)], method='glmnet', trControl= my_control, tuneGrid=ridgeGrid) 
+ridge_mod$bestTune
+```
+
+```{r}
+min(ridge_mod$results$RMSE)
+#0.114211
+```
+
+```{r}
+ridgeVarImp <- varImp(ridge_mod,scale=F)
+ridgeImportance <- ridgeVarImp$importance
+```
+
+So lasso did what it is supposed to do: it seems to have dealt with multicolinearity well by not using about 45% of the available variables in the model.
+```{r}
+RidgePred <- predict(ridge_mod, test1)
+predictions_ridge <- exp(RidgePred) #need to reverse the log to the real values
+head(predictions_ridge)
+```
+
+```{r}
+sub_ridge <- data.frame(Id = test_labels, SalePrice = predictions_ridge) 
+write.csv(sub_ridge, file = 'ridge.csv', row.names = F)
+```
+
+
+```{r}
+xgb_grid = expand.grid(
+nrounds = 1000,
+eta = c(0.1, 0.05, 0.01),
+max_depth = c(2, 3, 4, 5, 6),
+gamma = 0,
+colsample_bytree=1,
+min_child_weight=c(1, 2, 3, 4 ,5),
+subsample=1
+)
+```
+
+The next step is to let caret find the best hyperparameter values (using 5 fold cross validation).
+```{r}
+#xgb_caret <- train(x=train1, y=all$SalePrice[!is.na(all$SalePrice)], method='xgbTree', trControl= my_control, tuneGrid=xgb_grid) 
+#xgb_caret$bestTune
+```
+
+According to caret, the ‘bestTune’ parameters are:
+
+Max_depth=3
+eta=0.05
+Min_child_weight=3 #4
+
+In the remainder of this section, I will continue to work with the xgboost package directly. Below, I am starting with the preparation of the data in the recommended format.
+
+```{r}
+label_train <- all$SalePrice[!is.na(all$SalePrice)]
+
+# put our testing & training data into two seperates Dmatrixs objects
+dtrain <- xgb.DMatrix(data = as.matrix(train1), label= label_train)
+dtest <- xgb.DMatrix(data = as.matrix(test1))
+```
+
+In addition, I am taking over the best tuned values from the caret cross validation.
+```{r}
+default_param<-list(
+        objective = "reg:linear",
+        booster = "gbtree",
+        eta=0.05, #default = 0.3
+        gamma=0,
+        max_depth=3, #default=6
+        min_child_weight=4, #4, #default=1
+        subsample=1,
+        colsample_bytree=1
+)
+```
+
+The next step is to do cross validation to determine the best number of rounds (for the given set of parameters).
+```{r}
+xgbcv <- xgb.cv( params = default_param, data = dtrain, nrounds = 1000, nfold = 5, showsd = T, stratified = T, print_every_n = 40, early_stopping_rounds = 10, maximize = F)
+#[475]	train-rmse:0.063227+0.002179	test-rmse:0.115287+0.007759
+```
+
+```{r}
+#train the model using the best iteration found by cross validation
+xgb_mod <- xgb.train(data = dtrain, params=default_param, nrounds = 343)
+```
+
+```{r}
+XGBpred <- predict(xgb_mod, dtest)
+predictions_XGB <- exp(XGBpred) #need to reverse the log to the real values
+head(predictions_XGB)
+```
+
+```{r}
+#view variable importance plot
+library(Ckmeans.1d.dp) #required for ggplot clustering
+mat <- xgb.importance (feature_names = colnames(train1),model = xgb_mod)
+```
+
+```{r}
+sub_xgb <- data.frame(Id = test_labels, SalePrice = predictions_XGB) 
+write.csv(sub_xgb, file = 'xgb.csv', row.names = F)
+```
+
+xgb linear
+
+```{r}
+xgb_grid_linear <- expand.grid(nrounds = c(1, 100), eta = 2^seq(-10,-5), lambda = c(0,0.01,0.1,1), alpha = c(0,0,01,0.1,1))
+
+xgb_caret_linear <- train(x=train1, y=all$SalePrice[!is.na(all$SalePrice)], method='xgbLinear', trControl= my_control, tuneGrid=xgb_grid_linear) 
+xgb_caret_linear$bestTune
+```
+
+
+According to caret, the ‘bestTune’ parameters are:
+
+nrounds=100
+lambda=0.1
+alpha=0.1
+eta=0.0009765625
+
+
+```{r}
+default_param_xgb_linear <- list(
+        booster="gblinear",
+        eval_metric="rmse",
+        eta=0.5,
+        lambda = 2.0,
+        alpha = 0.0,
+        lambda_bias = 0.0,
+        min_child_weight = 5,
+        subsample = 0.8
+)
+```
+
+The next step is to do cross validation to determine the best number of rounds (for the given set of parameters).
+```{r}
+xgb_linearcv <- xgb.cv( params = default_param_xgb_linear, data = dtrain, nrounds = 1000, nfold = 5, showsd = T, stratified = T, print_every_n = 40, early_stopping_rounds = 10, maximize = F)
+```
+
+```{r}
+#train the model using the best iteration found by cross validation
+xgb_linear_mod <- xgb.train(data = dtrain, params=default_param_xgb_linear, nrounds = 285)
+```
+
+```{r}
+XGBLinearpred <- predict(xgb_linear_mod, dtest)
+predictions_XGBLinear <- exp(XGBLinearpred) #need to reverse the log to the real values
+head(predictions_XGBLinear)
+```
+
+```{r}
+#view variable importance plot
+library(Ckmeans.1d.dp) #required for ggplot clustering
+mat <- xgb.importance (feature_names = colnames(train1),model = xgb_linear_mod)
+```
+
+```{r}
+sub_xgb_linear <- data.frame(Id = test_labels, SalePrice = predictions_XGBLinear) 
+write.csv(sub_xgb_linear, file = 'xgb_linear.csv', row.names = F)
+```
+
+KNN
+```{r}
+library(FNN)
+library(caret)
+
+set.seed(2018)
+# folds <- createFolds(label_train, k=10)
+# 
+# kFolds <- length(folds)
+# cv.results <- data.frame(k = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10), rmse = rep(0,10))
+# for (i in 1:dim(cv.results)[1]) {
+#   rmse <- 0
+#   for (j in 1:kFolds) {
+#     idxTrain <- unlist(folds[-j]);
+#     idxValid <- unlist(folds[j]);
+#     
+#     train_data <- train1[idxTrain,]
+#     valid_data <- train1[-idxTrain,]
+#     
+#     # fit
+#     mod.knn <- knn.reg(train = train_data, test = valid_data, y = label_train[idxTrain], k = cv.results$k[i])
+#     pred <- mod.knn$pred
+#     
+#     # rmse
+#     rmse <- c(rmse, sqrt(sum((pred - label_train[-idxTrain]) ^ 2) / nrow(valid_data)))
+#   }
+#   
+#   # evaluate on k-flods
+#   cat ("Fold: ", cv.results$k[i], ", rmse: ", rmse, "\n")
+#   cv.results$rmse[i] <- mean(rmse)
+# }
+# 
+# # min err
+# ind.min <- which.min(cv.results$rmse)
+# ind.min
+
+mod.knn <- knn.reg(train = train1, test = test1, y = label_train, k = 7)
+predictions_knn <- exp (mod.knn$pred)
+```
+
+```{r}
+predictions_knn[c(0:10)]
+#write.csv(predictions_knn, file = "./knn.csv", row.names = F)
+```
+
+
+Neural Network
+```{r}
+require(nnet)
+library(caret)
+
+# grid search for nnet
+set.seed(2018)
+nnet_grid <- expand.grid(decay = c(0, 1e-2, 0.1, 1, 10), size = c(10, 15, 20, 25))
+ctrl <- trainControl(method = "cv", number = 5, verboseIter = TRUE)
+
+# parameters
+input_layer_size <- ncol(train1)
+hid_layer_size_max <- max (nnet_grid[[2]])
+maxNWts <- (input_layer_size+1) * hid_layer_size_max + (hid_layer_size_max + 1)
+
+```
+
+```{r}
+#nnet.cv <- train (x = as.matrix(train1), y = label_train, method = "nnet", maxit = 400, MaxNWts = maxNWts, linout = TRUE, tunrGrid = nnet_grid, trControl = ctrl)
+#save(nnet.cv, file = "nnet_cv.RData")
+```
+
+```{r}
+#mod.nnet <- nnet (x = as.matrix(train1), y = label_train, maxit = 400, size = 20, decay = 0.1, MaxNWts = maxNWts, linout = TRUE)
+#predTrain <- predict (mod.nnet, newdata = as.matrix(train1))
+
+#train <- train %>% mutate(y_actual = label_train) %>% mutate(y_pred = as.numeric(predTrain)*scl) %>% mutate(diff = abs(y_actual-y_pred))
+#gg <- ggplot(train, aes(y_actual, y_pred)) + geom_point(aes(x = y_actual, y = y_pred, color = diff)) + 
+#  geom_abline(slope = 1, intercept = 0); 
+# Worst ones
+#badPreds <- train %>% filter(diff > 0.3) %>% arrange(desc(diff))
+```
+
+```{r}
+#exp (predTrain[c(0:10)*scl])
+predTest <- predict(mod.nnet, newdata = as.matrix(test1))
+exp (predTest[c(0:10)])
+predictions_nn <- exp (predTest)
+```
+
+```{r}
+write.csv(exp (predTest), "./nn.csv", row.names = F)
+```
+
+
+
+9.3 Averaging predictions
+Since the lasso and XGBoost algorithms are very different, averaging predictions likely improves the scores. As the lasso model does better regarding the cross validated RMSE score (0.1121 versus 0.1162), I am weigting the lasso model double.
+
+```{r}
+sub_avg <- data.frame(Id = test_labels, SalePrice = (predictions_XGB + predictions_lasso*2)/3) # + predictions_nn + predictions_XGBLinear + predictions_knn + predictions_ridge
+head(sub_avg)
+```
+
+```{r}
+write.csv(sub_avg, file = 'average_2_.csv', row.names = F)
+```
+
+10. Test
+
+
+
